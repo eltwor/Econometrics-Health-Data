@@ -1,0 +1,671 @@
+---
+title: "EkonometriaElizaTworkowska"
+author: "Eliza Tworkowska"
+date: "2025-05-30"
+output: 
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_float: true
+    code_folding: hide
+    highlight: tango
+    df_print: paged
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# O projekcie
+
+W projekcie będziemy przewidywać dane ciśnienia krwii na podstawie zanonimizowanych  wskaźników zdrowia i stylu zycia pacjentów. Do wszystkich modeli samodzielnie dobiorę zmienne na podstawie tabeli korelacji i wykresów zależnośći.
+
+# Wczytanie danych
+
+Dane wczytujemy w formie CSV, więc wczytujemy naszą tabelę za pomocą read.csv. 
+Składa się ona z 9 kolumn:
+
+1. **systolic** - Ciśnienie skurczowe, zmienna którą będziemy objaśniać.
+2. **weight** - Waga pacjenta
+3. **height** - Wzrost pacjenta
+4. **BMI** - Wskaźnik masy ciała (masa (kg) / wysokość (m))
+5. **waist** - Obwód w talii ciała pacjenta
+6. **age** - Wiek pacjenta
+7. **diabetes** - Czy pacjent ma cukrzycę (zmienna binarna, 1 oznacza tak; 0 - nie)
+8. **smoker** - Czy pacjent pali papierosy (zmienna binarna, 1 oznacza tak; 0 - nie)
+9. **fastfood** - Częstotliwość w ciągu tygodnia jedzenia "fastfoodów", nie zdrowego jedzenia
+
+Wczytamy dane, a następnie wyświetlimy krótkie przedstawienie struktury za pomocą funkcji head.
+
+```{r}
+health <- read.csv("~/Studia/Ekonometria/health.csv")
+head(health)
+```
+
+## Analiza statystyczna
+
+```{r}
+library(psych)
+describe(health)
+```
+
+Dzięki analizie statystycznej widzimy najważniejsze informacje na temat każdej zmiennej. Z uwagi na to, że będziemy skupiać się na zmiennej ciśnienia krwi skupmy się na jej danych.
+
+Przede wszystkim mamy 1475 obserwacji. Średnie (mean) ciśnienie wynosi ~124.73, odchylenie standardowe: 17.62, mediana: 122. 
+Najmniejsze ciśnienie wynosi 80 a największe 224. To bardzo duży rozrzut (range: 144) w porównaniu z naszą średnią, co może wpłynąć na późniejsze problemu w próbie modelowania tej zmiennej. 
+
+Kolejne ciekawe informacje z naszej analizy statystycznej:
+- 47.80% pacjentów pali papierosy
+- średnio jedzą 2 razy w tygodniu fast food
+- Średni wiek wynosi 48 lat
+- Średnio próbka badawcza ma nadwagę (BMI=28)
+
+## Histogram
+
+```{r}
+par(mfrow = c(2, 2))
+hist(health$systolic, main="Ciśnienie skurczowe", xlab="ciśnienie [mmHg]", col="lightblue")
+hist(health$weight, main="Waga", xlab="waga [kg]", col="lightgreen")
+hist(health$age, main="Wiek", xlab="wiek [lata]", col="lightcoral")
+hist(health$bmi, main="BMI", xlab="BMI", col="lightgray")
+```
+
+Tworzymy histogram wybranych zmiennych, co pozwala nam wizualnie porównać kształt danych.
+Wiek jest równomiernie rozłożony co oznacza równomierną próbkę badanych dorosłych pacjentów. Żaden z wykresów nie przedstawia odchyleń.
+
+# Badanie korelacji zmiennych
+
+## Macierz korelacji
+Następnie obliczamy macierz korelacji pomiędzy czterema zmiennymi (Eksport, Import, Sprzedaż, Obroty). Używamy funkcji cor() z argumentem use = "complete.obs", aby pominąć brakujące obserwacje.
+
+```{r}
+# Obliczenie macierzy korelacji
+library(dplyr)
+M <- cor(select(health, systolic,weight,age,bmi,smoker,diabetes,fastfood,waist,height), use = "complete.obs")
+```
+
+Otrzymaną macierz korelacji można zwizualizować przy użyciu pakietu corrplot: 
+
+```{r}
+library(corrplot)
+library(dplyr)
+# Obliczenie macierzy korelacji
+M <- cor(select(health, systolic, weight, age, bmi, smoker, diabetes, fastfood, waist, height), 
+         use = "complete.obs")
+
+corrplot(M, 
+         method = "color", 
+         type = "upper", 
+         tl.col = "black",
+         addCoef.col = "white",
+         col = colorRampPalette(c("lightblue", "black"))(100),
+         bg = "gray95",  # Kolor tła wykresu
+         addgrid.col = "gray80")  # Kolor siatki
+round(M,2)
+```
+
+Z macierzy korelacji możemy wyciągnąć następujące wnioski:
+
+**1. Zmienne istotnie skorelowane z `systolic` (ciśnieniem)**
+
+- Wiek (`age`) - umiarowana korelacja dodatnia (0.40): Wraz z wiekiem ciśnienie skurczowe rośnie (co jest zgodne z wiedzą medyczną).
+
+- Obwód talii (`waist`) – słaba korelacja dodatnia (0.17): Większy obwód talii może wiązać się z nieznacznie wyższym ciśnieniem.
+
+- Cukrzyca (`diabetes`) – słaba korelacja dodatnia (0.15): Osoby z cukrzycą mogą mieć tendencję do wyższego ciśnienia.
+
+**2. Zmienne nieskorelowane z systolic**
+
+- Waga (`weight`), BMI, wzrost (`height`), palenie (`smoker`), fast food (`fastfood`) – korelacje bliskie zeru): Brak statystycznie istotnego związku z ciśnieniem w tych danych.
+
+**3. Silne korelacje między zmiennymi objaśniającymi (potencjalny problem multikolinearności):**
+
+- Waga (`weight`) ~ BMI ~ Obwód talii (`waist`) – bardzo silne korelacje (0.89–0.91): Te zmienne mierzą podobne cechy (otyłość/rozmiar ciała). Użycie wszystkich jednocześnie w modelu regresji może zaburzyć interpretację.
+
+- Wiek (`age`) ~ Palenie (`smoker`) – umiarkowana korelacja ujemna (-0.38): Młodsi respondenci częściej deklarują palenie.
+
+## Wnioski 
+
+Najsilniej skorelowaną zmienną z ciśnieniem jest wiek. Będziemy ją wykorzystywać jako główną zmienną w większości modelach. Istnieje wysoka korelacja pomiędzy zmiennymi wskazującymi nadwagę pacjenta (BMI, waga, obwód talii) - w regresji lepiej wybrać tylko jedną z tych zmiennych.
+Słabe związki smoker i fastfood z ciśnieniem sugerują, że mogą być mniej istotne w modelu.
+
+# Model regresji liniowej prostej
+
+Model regresji liniowej prostej objaśnia zmienną za pomocą pojedynczej innej zmiennej. W naszym projekcie objaśniamy zmienną systolic. Na podstawie macierzy korelacji wybieramy dodatkowe zmienne. 
+
+## Budowa i porównanie modeli
+- `lm(systolic ~ age)` - Regresja liniowa prosta, wyjaśnienie ciśnienia za pomocą wieku
+
+- `lm(systolic ~ waist)` - Regresja liniowa prosta, wyjaśnienie ciśnienia za pomocą obwodu talii
+```{r}
+library(broom)
+library(knitr)
+library(kableExtra)
+
+lm_age <- lm(systolic ~ age, data=health)
+summary(lm_age)
+
+lm_waist <- lm(systolic ~ waist, data=health)
+summary(lm_waist)
+
+# 2. Przygotowanie danych
+create_metrics_row <- function(model, description) {
+  glance(model) %>%
+    select(r.squared, adj.r.squared, sigma, AIC, BIC, statistic, p.value) %>%
+    rename(
+      "R-squared" = r.squared,
+      "Adj. R-squared" = adj.r.squared,
+      "Resid. SE" = sigma,
+      "F-statistic" = statistic,
+      "p-value" = p.value
+    ) %>%
+    mutate(
+      across(where(is.numeric), ~ round(., 4)),
+      Model = description,
+      Observations = nobs(model),
+      Missing = sum(!complete.cases(model$model))
+    )
+}
+
+# 3. Łączenie wyników
+comparison_table <- bind_rows(
+  create_metrics_row(lm_age, "Ciśnienie ~ Wiek"),
+  create_metrics_row(lm_waist, "Ciśnienie ~ Obwód talii")
+) %>%
+  select(Model, everything())
+
+# 4. Formatowanie tabeli
+comparison_table %>%
+  kable(align = c("l", rep("c", ncol(.)-1)), caption = "Porównanie modeli") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
+
+### Ciśnienie ~ Wiek
+
+- Wiek jest silnie istotnym predyktorem ciśnienie `(β = 0.417, p < 0.001)` - wzrost wieku o 1 jednostkę wiąże się ze wzrostem ciśnienia o 0.417 jednostek.
+
+- Wiek samodzielnie tłumaczy 16% zmienności ciśnienia krwi, co potwierdza umiarkowany, ale istotny związek.
+
+### Ciśnienie ~ Obwód talii
+
+- Wyjaśniona wariancja (R²): Tylko 2.83%. Obwód talii ma bardzo słaby wpływ na ciśnienie krwi.
+
+- Wysokie AIC/BIC (12612.32/12628.21): Potwierdza znacznie gorsze dopasowanie.
+
+- Test F (p < 0.001): Mimo istotności statystycznej, praktyczna użyteczność modelu jest ograniczona.
+
+### Wnioski
+
+Oba modele mają ograniczoną praktyczność z uwagi na słaby współczynnik skorygowanego determinacji, natomiast wiek ma o wiele lepszą możliwoś przewidywania (~0.16 w porównaniu ~0.02). 
+
+## Wzór modeli
+
+1. $systolic = 104.345 + 0.417 \cdot age + \epsilon$
+
+2. $systolic = 106.383 + 0.183 \cdot waist + \epsilon$
+
+## Wykres reszt
+
+### Wykresy dla wieku
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_waist)
+```
+
+### Wykresy dla obwodu talii
+
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_waist)
+```
+**1. Reszty vs Wartości dopasowane:** wykres sprawdza liniowość związku i stałą wariancję reszt. U nas punkty nie tworzą wzoru (brak np. krzywej lub lejku) - sugeruje to liniowość i homoskedatyczność modelu.
+
+**2. Wykres kwantyl** - kwantyl: Werifukuje normalność rozkładu reszt. Punkty leżą głównie wzdłuż lini referencyjnej, oprócz widocznego odstępu przy wyższych wartościach, które mogą zaburzać nam model. 
+
+**3. Scale-Location:** Wykrywa heteroskedatyczność (zmienną wariancję reszt). Linia nie wskazuje wyrażnie skośności. Sugeruje to brak heteroskedatyczności w naszym modelu.
+
+**4. Reszty vs Wpływ obserwacji:** Identyfikuje obserwacje wpływowe (outliers, high-leverage points). Na naszym wykresie linia Cooka jest praktycznie niewidoczna - wskazuje na brak outlierów. 
+
+## Test modeli
+
+Zrobimy testy modeli `(systolic~age)` i `(systolic~waist)`. Za pomocą biblotek `lmtest, broom` wyświetlimy wyniki w formie tabeli. Jeżeli spełnią wymagania interpretacji testów poprawnych (p.value > 0.05) to wyświetlimy ‘OK’.
+
+```{r, warning=FALSE}
+library(lmtest)
+library(broom)
+
+# Funkcja do ekstrakcji wyników testów
+get_test_results <- function(model) {
+  # Durbin-Watson
+  dw <- dwtest(model)
+  # Breusch-Pagan
+  bp <- bptest(model)
+  # Shapiro-Wilk
+  sw <- shapiro.test(resid(model))
+  # RESET
+  reset <- resettest(model)
+  
+  data.frame(
+    Test = c("Durbin-Watson (autokorelacja)", 
+             "Breusch-Pagan (homoskedastyczność)",
+             "Shapiro-Wilk (normalność)",
+             "RESET (liniowość)"),
+    Statystyka = c(dw$statistic, bp$statistic, sw$statistic, reset$statistic),
+    p_value = c(dw$p.value, bp$p.value, sw$p.value, reset$p.value)
+  )
+}
+
+# Tabela porównawcza
+results_age <- get_test_results(lm_age)
+results_waist <- get_test_results(lm_waist)
+
+comparison_table <- data.frame(
+  Test = results_age$Test,
+  lm_SO_Stat = round(results_age$Statystyka, 3),
+  lm_SO_p = round(results_age$p_value, 4),
+  lm_SO_log_Stat = round(results_waist$Statystyka, 3),
+  lm_SO_log_p = round(results_waist$p_value, 4)
+)
+
+colnames(comparison_table) <- c("Test", 
+                                "Stat. (Age)", "p-value (Age)", 
+                                "Stat. (Waist)", "p-value (Waist)")
+
+# Dodajemy znaczenie gwiazdkowe
+comparison_table <- comparison_table %>%
+  mutate(
+    `Wniosek (Age)` = ifelse(`p-value (Age)` < 0.05, "Problem***", "OK"),
+    `Wniosek (Waist)` = ifelse(`p-value (Waist)` < 0.05, "Problem***", "OK")
+  )
+
+knitr::kable(comparison_table, align = "c", caption = "Porównanie diagnostyki modeli")
+```
+
+W obu modelach brak autokorelacji reszt na bazie testu Durbin-Watson. Wartości DW są bliskie 2, a p > 0.05.
+
+W modelu z wiekiem istnieje heteroskedastyczność (niestała wariancja reszt). Na bazie testu Breusch-Pagan otrzymaliśmy p<0.001. Natomiast model z obwodem talii nie wykazuje heteroskedastyczność.
+
+Na bazie testu Shapiro-Wilk widzimy, że oba modele mają problem z normalnością reszt. Reszty nie mają rozkładu normalnego. Rozwiązaniem może być transofrmacja zmiennej zależnej np. logarytmicznie.
+
+
+# Model regresji liniowej wielorakiej
+
+Model regresji liniowej wielorakiej objaśnia zmienną za pomocą kilku innych zmiennych. W naszym projekcie objaśniamy zmienną systolic. Na podstawie macierzy korelacji wybieramy dodatkowe zmienne. 
+
+## Budowa i porównanie modeli
+
+- `lm(systolic ~ age + waist)` - Regresja liniowa, wyjaśnienie ciśnienia za pomocą wieku i obwodu talii.
+
+- `lm(systolic ~ age + weight)` - Regresja liniowa prosta, wyjaśnienie ciśnienia za pomocą wieku i wagi.
+
+```{r}
+library(broom)
+library(knitr)
+library(kableExtra)
+
+lm_age_waist <- lm(systolic ~ age + waist, data=health)
+summary(lm_age_waist)
+
+lm_age_weight <- lm(systolic ~ age + weight, data=health)
+summary(lm_age_weight)
+
+# 3. Łączenie wyników
+comparison_table <- bind_rows(
+  create_metrics_row(lm_age_waist, "Ciśnienie ~ Wiek + Obwód talii"),
+  create_metrics_row(lm_age_weight, "Ciśnienie ~ Wiek + waga")
+) %>%
+  select(Model, everything())
+
+# 4. Formatowanie tabeli
+comparison_table %>%
+  kable(align = c("l", rep("c", ncol(.)-1)), caption = "Porównanie modeli") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
+
+### Ciśnienie ~ Wiek + Obwód talii
+
+- Wiek jest silnie istotnym predyktorem ciśnienie `(β = 0.398, p < 0.001)` - wzrost wieku o 1 jednostkę wiąże się ze wzrostem ciśnienia o 0.398 jednostek.
+
+- Obwód talii również jest istotnym predyktorem ciśnienia `(β = 0.102, p < 0.001).`
+
+- Razem obie zmienne wyjaśniają 16.97% zmienności ciśnienia (na bazie $R^2$). 
+
+### Ciśnienie ~ Wiek + waga
+
+- Obie zmienne są istotne da modelu przy $p<0.001$. 
+
+- Wiek jest silnie istotnym predyktorem ciśnienie `(β = 0.419, p < 0.001)` - wzrost wieku o 1 jednostkę wiąże się ze wzrostem ciśnienia o 0.419 jednostek.
+
+- Waga pomimo mniejszego wpływu na ciśnienie jest dalej istotna `(β = 0.093, p < 0.001)`. Wynika to również z tego, że przy ciśnieniu zmiana o 0.1 jest również ważna w klinicznym zestawieniu.
+
+- Test F (p < 0.001): Mimo istotności statystycznej, praktyczna użyteczność modelu jest ograniczona.
+
+### Wnioski
+
+Oba modele mają ograniczoną praktyczność z uwagi na słaby współczynnik skorygowanego determinacji, natomiast wiek + waga ma o nieco lepszą możliwość przewidywania (17.33% w porównaniu z 16.97%)
+
+## Wzór modeli
+
+1. $systolic = 95.086 + 0.3981 \cdot age + 0.1018 * waist + \epsilon$
+2. $systolic = 96.412 + 0.4195 \cdot age + 0.0935 \cdot weight + \epsilon$
+
+## Wykres reszt
+
+### Wykresy dla wieku, obwodu talii
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_age_waist)
+```
+
+### Wykresy dla wieku, wagi
+
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_age_weight)
+```
+**1. Reszty vs Wartości dopasowane:** wykres sprawdza liniowość związku i stałą wariancję reszt. U nas punkty nie tworzą wzoru (brak np. krzywej lub lejku) - sugeruje to liniowość i homoskedatyczność modelu.
+
+**2. Wykres kwantyl - kwantyl:** Werifukuje normalność rozkładu reszt. Punkty leżą głównie wzdłuż lini referencyjnej, oprócz widocznego odstępu przy wyższych wartościach, które mogą zaburzać nam model. 
+
+**3. Scale-Location:** Wykrywa heteroskedatyczność (zmienną wariancję reszt). Linia nie wskazuje wyrażnie skośności. Sugeruje to brak heteroskedatyczności w naszym modelu.
+
+**4. Reszty vs Wpływ obserwacji:** Identyfikuje obserwacje wpływowe (outliers, high-leverage points). Na naszym wykresie linia Cooka jest praktycznie niewidoczna - wskazuje na brak outlierów. 
+
+## Test modeli
+
+Zrobimy testy modeli `(systolic~age+waist)` i `(systolic~age+weight)`. Za pomocą biblotek `lmtest, broom` wyświetlimy wyniki w formie tabeli. Jeżeli spełnią wymagania interpretacji testów poprawnych (p.value > 0.05) to wyświetlimy ‘OK’.
+
+```{r, warning=FALSE}
+library(lmtest)
+library(broom)
+
+# Tabela porównawcza
+results_age_waist <- get_test_results(lm_age_waist)
+results_age_weight <- get_test_results(lm_age_weight)
+
+comparison_table <- data.frame(
+  Test = results_age_waist$Test,
+  lm_SO_Stat = round(results_age_waist$Statystyka, 3),
+  lm_SO_p = round(results_age_waist$p_value, 4),
+  lm_SO_log_Stat = round(results_age_weight$Statystyka, 3),
+  lm_SO_log_p = round(results_age_weight$p_value, 4)
+)
+
+colnames(comparison_table) <- c("Test", 
+                                "Stat. (Age+Waist)", "p-value (Age+Waist)", 
+                                "Stat. (Age+Weight)", "p-value (Age+Weight)")
+
+# Dodajemy znaczenie gwiazdkowe
+comparison_table <- comparison_table %>%
+  mutate(
+    `Wniosek (Age+Waist)` = ifelse(`p-value (Age+Waist)` < 0.05, "Problem***", "OK"),
+    `Wniosek (Age+Weight)` = ifelse(`p-value (Age+Weight)` < 0.05, "Problem***", "OK")
+  )
+
+knitr::kable(comparison_table, align = "c", caption = "Porównanie diagnostyki modeli")
+```
+
+Obydwa modele mają `p<00.1` przy teście na homoskedastyczność Breuscha-Pagana. Wykazuje to heroskedatyczność - wariancja reszt nie jest stała i predykcje będą mniej precyzyjne dla skrajnych wartości.
+
+Kolejnym problemem jest nienormalność reszt przy teście Shapiro-Wilk. Wynika z niego, że rozkład błędów odbiega od normalności. 
+
+
+# Model regresji wielomianowy
+
+Model wielomianowy opisuje zmienną objaśnianą za pomocą nieliniowej funkcji potęgowej zmiennej objaśniającej. 
+
+## Budowa i porównanie modeli
+
+- `lm(systolic ~ age + I(age^2))` - Regresja wielomianowa zmiennej wieku.
+
+- `lm(systolic ~ waist + I(waist^2) ` - Regresja wielomianowa zmiennej obwodu talii.
+
+```{r}
+library(broom)
+library(knitr)
+library(kableExtra)
+
+wielomian_age <- lm(systolic ~ age + I(age^2), data=health)
+summary(wielomian_age)
+
+wielomian_waist <- lm(systolic ~ waist + I(waist^2), data=health)
+summary(wielomian_waist)
+
+# 3. Łączenie wyników
+comparison_table <- bind_rows(
+  create_metrics_row(wielomian_age, "Ciśnienie ~ Wiek + Wiek^2"),
+  create_metrics_row(wielomian_waist, "Ciśnienie ~ Obwód talii + Obwód talii ^2")
+) %>%
+  select(Model, everything())
+
+# 4. Formatowanie tabeli
+comparison_table %>%
+  kable(align = c("l", rep("c", ncol(.)-1)), caption = "Porównanie modeli") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
+
+### Ciśnienie ~ Wiek + Wiek^2
+
+- Wiek przestał być istotnie statystycznie w modelu wielomianowym (p = 0.207). 
+
+- Wielomian wieku wyjaśnia 16.26% zmienności ciśnienia (na bazie $R^2$). 
+
+### Ciśnienie ~ Obwód talii + Obwód talii^2
+
+- Wyjaśniona wariancja (R²): Tylko 2.98%. Obwód talii ma bardzo słaby wpływ na ciśnienie krwi. 
+
+- Test F (p < 0.001): Mimo istotności statystycznej, praktyczna użyteczność modelu jest ograniczona.
+
+### Wnioski
+
+Oba modele wielomianowe mają słabe praktyczne zastosowanie (Test F p<0.001), dodatkowo wiek przestaje być istotnie statystyczny. Z uwagi na to ten model z tymi zmiennymi nie pasuje do przewidywania ciśnienia.
+
+## Wzór modeli
+
+1. $systolic = 109.3 + 0.1924 \cdot age + 0.0022 * age^2 + \epsilon$
+2. $systolic = 87.223 + 0.5588 \cdot waist - 0.0017 \cdot waist^2 + \epsilon$
+
+## Wykres reszt
+
+### Wykresy dla wielomianu wieku
+```{r}
+par(mfrow = c(2,2))
+
+plot(wielomian_age)
+```
+
+### Wykresy dla wielomianu obwodu talii
+
+```{r}
+par(mfrow = c(2,2))
+
+plot(wielomian_waist)
+```
+
+**1. Reszty vs Wartości dopasowane:** wykres sprawdza liniowość związku i stałą wariancję reszt. U nas punkty nie tworzą wzoru (brak np. krzywej lub lejku) - sugeruje to liniowość i homoskedatyczność modelu.
+
+**2. Wykres kwantyl - kwantyl:** O wiele większe odchylenie reszt w naszym modelu od linii referencyjnej. Może wskazywać na nienormalność rozkładu reszt. 
+
+**3. Scale-Location:** Wykrywa heteroskedatyczność (zmienną wariancję reszt). Linia nie wskazuje wyrażnie skośności. Sugeruje to brak heteroskedatyczności w naszym modelu.
+
+**4. Reszty vs Wpływ obserwacji:** Identyfikuje obserwacje wpływowe (outliers, high-leverage points). Na naszym wykresie linia Cooka jest praktycznie niewidoczna - wskazuje na brak outlierów. 
+
+## Test modeli
+
+Zrobimy testy modeli `(systolic~age+age^2)` i `(systolic~waist+waist^2)`. Za pomocą biblotek `lmtest, broom` wyświetlimy wyniki w formie tabeli. Jeżeli spełnią wymagania interpretacji testów poprawnych (p.value > 0.05) to wyświetlimy ‘OK’.
+
+```{r, warning=FALSE}
+library(lmtest)
+library(broom)
+
+# Tabela porównawcza
+results_age <- get_test_results(wielomian_age)
+results_waist <- get_test_results(wielomian_waist)
+
+comparison_table <- data.frame(
+  Test = results_age$Test,
+  lm_SO_Stat = round(results_age$Statystyka, 3),
+  lm_SO_p = round(results_age$p_value, 4),
+  lm_SO_log_Stat = round(results_waist$Statystyka, 3),
+  lm_SO_log_p = round(results_waist$p_value, 4)
+)
+
+colnames(comparison_table) <- c("Test", 
+                                "Stat. (Age^2)", "p-value (Age^2)", 
+                                "Stat. (Waist^2)", "p-value (Waist^2)")
+
+# Dodajemy znaczenie gwiazdkowe
+comparison_table <- comparison_table %>%
+  mutate(
+    `Wniosek (Age^2)` = ifelse(`p-value (Age^2)` < 0.05, "Problem***", "OK"),
+    `Wniosek (Waist^2)` = ifelse(`p-value (Waist^2)` < 0.05, "Problem***", "OK")
+  )
+
+knitr::kable(comparison_table, align = "c", caption = "Porównanie diagnostyki modeli")
+```
+
+Model wielomianu dla wieku ma problemy z homoskedatycznością w teście Breusch-Pagan, wariancja reszt nie jest stała, mogą wystąpić problemy przy predykcji dla skrajnych wartości. Istnieje również problem z normalnością w teście Shapiro-Wilk, co było już widoczne w wykresie kwantylowym.
+
+Natomiast wielomian obwodu talii ma jedynie widoczny problem z normalnością.
+
+
+
+# Model regresji ze zmnienną binarną (0-1)
+
+W naszym modelu istnieją dwie zmienne binarne: smoker i diabetes, kolejno palacz i cukrzyca. Wskazują one, czy nasz pacjent pali (Tak/Nie) lub czy ma cukrzyce (Tak/Nie).
+
+## Budowa i porównanie modeli
+- `lm(systolic ~ smoker)` - Regresja zmiennej binarnej, wyjaśnienie ciśnienia ze względu na palenie papierosów przez pacjenta
+
+- `lm(systolic ~ diabetes)` - Regresja zmiennej binarnej, wyjaśnienie ciśnienia ze względu na cukrzycę 
+
+```{r}
+library(broom)
+library(knitr)
+library(kableExtra)
+
+lm_smoker <- lm(systolic ~ smoker, data=health)
+summary(lm_smoker)
+
+lm_diabetes <- lm(systolic ~ diabetes, data=health)
+summary(lm_diabetes)
+
+# 3. Łączenie wyników
+comparison_table <- bind_rows(
+  create_metrics_row(lm_smoker, "Ciśnienie ~ Palacz"),
+  create_metrics_row(lm_diabetes, "Ciśnienie ~ Cukrzyca")
+) %>%
+  select(Model, everything())
+
+# 4. Formatowanie tabeli
+comparison_table %>%
+  kable(align = c("l", rep("c", ncol(.)-1)), caption = "Porównanie modeli") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE,
+    position = "center"
+  ) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(1, bold = TRUE)
+```
+
+### Ciśnienie ~ Palacz
+
+- Palenie papierosów jest według tego modelu statestycznie istotne (p<0.01). Natomiast sugeruje, że palenie papierosów obniża ciśnienie o ~4.43 jednostki.
+
+- Palenie papierosów wyjaśnia natomiast jedynie 1.58% zmienności ciśnienia - praktycznie nieistniejący wpływ pod względem modelowania.
+
+### Ciśnienie ~ Cukrzyca
+
+- Cukrzyca jest statystycznie istotne dla tego modelu (p<0.01), jeśli pacjent ma cukrzycę to podwyższa się średnio jego ciśnienie o 7.756 jednostki. 
+
+- Sama cukrzyca wyjaśnia jedynie 2.37% ciśnienia. Jest to praktycznie niewystarczające by na jej bazie przeprowadzać predykcje. 
+
+### Wnioski
+
+Oba modele mają nieznaczny wpływ na predykcje ciśnienia skurczowego. Wynika z tego, że samodzielnie nie są w stanie wyjaśnić tej zmiennej objaśnianej do realistycznego modelu predykcji potrzebne by były dodatkowe zmienne.
+
+## Wzór modeli
+
+1. $systolic = 126.85 - 4.43 \cdot smoker + \epsilon$
+
+2. $systolic = 123.62 + 7.758 \cdot diabetes + \epsilon$
+
+## Wykres reszt
+
+### Wykresy dla wieku
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_smoker)
+```
+
+### Wykresy dla obwodu talii
+
+```{r}
+par(mfrow = c(2,2))
+
+plot(lm_diabetes)
+```
+
+Z uwagi na istotę binarną tych zmiennych większość wykresów nie pokazuje nam przydatnych danych do analizy poprawności tych modeli. 
+
+## Test modeli
+
+Zrobimy testy modeli `(systolic~smoker)` i `(systolic~diabetes)`. Za pomocą biblotek `lmtest, broom` wyświetlimy wyniki w formie tabeli. Jeżeli spełnią wymagania interpretacji testów poprawnych (p.value > 0.05) to wyświetlimy ‘OK’.
+
+```{r, warning=FALSE}
+
+# Tabela porównawcza
+results_smoker <- get_test_results(lm_smoker)
+results_diabetes <- get_test_results(lm_diabetes)
+
+comparison_table <- data.frame(
+  Test = results_smoker$Test,
+  lm_SO_Stat = round(results_smoker$Statystyka, 3),
+  lm_SO_p = round(results_smoker$p_value, 4),
+  lm_SO_log_Stat = round(results_smoker$Statystyka, 3),
+  lm_SO_log_p = round(results_smoker$p_value, 4)
+)
+
+colnames(comparison_table) <- c("Test", 
+                                "Stat. (Smoker)", "p-value (Smoker)", 
+                                "Stat. (Diabetes)", "p-value (Diabetes)")
+
+# Dodajemy znaczenie gwiazdkowe
+comparison_table <- comparison_table %>%
+  mutate(
+    `Wniosek (Smoker)` = ifelse(`p-value (Smoker)` < 0.05, "Problem***", "OK"),
+    `Wniosek (Diabetes)` = ifelse(`p-value (Diabetes)` < 0.05, "Problem***", "OK")
+  )
+
+knitr::kable(comparison_table, align = "c", caption = "Porównanie diagnostyki modeli")
+```
+
+Jedyny problem z naszymi modelemi, który wychodzi wyraźnie w testach jest to test normalności Shapiro-Wilk. 
+
+
+
